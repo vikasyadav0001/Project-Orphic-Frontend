@@ -3,7 +3,7 @@ import Message from './Message'
 import ReasoningPanel from './ReasoningPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
 
-const BACKEND_URL = 'http://localhost:8000'
+const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
   const [inputValue, setInputValue] = useState('')

@@ -4,7 +4,7 @@ import Chat from './components/Chat'
 import Auth from './components/Auth'
 import './styles/App.css'
 
-const BACKEND_URL = 'http://localhost:8000'
+const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('orphic-token'))
