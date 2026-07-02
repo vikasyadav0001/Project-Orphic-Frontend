@@ -12,9 +12,10 @@ function Auth({ onAuthSuccess }) {
     setError('')
     setLoading(true)
 
+    const backend_url = import.meta.env.VITE_API_URL || 'http://localhost:8000'
     const url = isLogin 
-      ? 'http://localhost:8000/auth/jwt/login' 
-      : 'http://localhost:8000/auth/register'
+      ? `${backend_url}/auth/jwt/login` 
+      : `${backend_url}/auth/register`
 
     const body = isLogin 
       ? new URLSearchParams({ username: email, password })
