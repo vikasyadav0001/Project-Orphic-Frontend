@@ -6,15 +6,20 @@ function Sidebar({
   onSelectThread,
   onNewThread,
   onDeleteThread,
+  onLogout,
   isOpen,
   onToggle
 }) {
   const formatDate = (isoString) => {
-    const date = new Date(isoString)
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric'
-    })
+    try {
+      const date = new Date(isoString)
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric'
+      })
+    } catch (e) {
+      return ''
+    }
   }
 
   return (
@@ -74,8 +79,11 @@ function Sidebar({
         <div className="sidebar-footer">
           <div className="connection-status">
             <span className="status-dot" id="status-dot"></span>
-            <span id="status-text">Ready</span>
+            <span id="status-text">Connected</span>
           </div>
+          <button className="logout-btn" onClick={onLogout} title="Sign Out">
+            Logout <span>🚪</span>
+          </button>
         </div>
       </aside>
     </>

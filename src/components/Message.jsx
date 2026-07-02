@@ -1,6 +1,61 @@
 import React, { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 
+// Zero-dependency syntax tokenizer for common languages (Python, JS, etc.)
+const tokenizeCode = (code, language) => {
+  const rules = [
+    { type: 'comment', regex: /(\/\/.*|#.*)/ },
+    { type: 'string', regex: /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/ },
+    { type: 'keyword', regex: /\b(const|let|var|function|return|import|export|from|class|def|if|else|elif|for|while|in|as|try|except|await|async|with|lambda|yield|self|None|True|False|and|or|not)\b/ },
+    { type: 'number', regex: /\b(\d+)\b/ },
+    { type: 'function', regex: /\b([a-zA-Z_]\w*)(?=\()/ },
+  ]
+
+  const combinedRegex = new RegExp(
+    rules.map(r => `(${r.regex.source})`).join('|'),
+    'g'
+  )
+
+  const parts = []
+  let lastIndex = 0;
+  let match;
+
+  while ((match = combinedRegex.exec(code)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(code.substring(lastIndex, match.index))
+    }
+
+    let matchedType = null
+    let matchedText = ''
+
+    for (let i = 0; i < rules.length; i++) {
+      if (match[i + 1] !== undefined) {
+        matchedType = rules[i].type
+        matchedText = match[i + 1]
+        break
+      }
+    }
+
+    if (matchedType) {
+      parts.push(
+        <span key={match.index} className={`token ${matchedType}`}>
+          {matchedText}
+        </span>
+      )
+    } else {
+      parts.push(match[0])
+    }
+
+    lastIndex = combinedRegex.lastIndex
+  }
+
+  if (lastIndex < code.length) {
+    parts.push(code.substring(lastIndex))
+  }
+
+  return parts.length > 0 ? parts : code
+}
+
 function Message({ message, isStreaming = false }) {
   const [copied, setCopied] = useState(false)
   const isUser = message.role === 'user'
@@ -39,18 +94,23 @@ function Message({ message, isStreaming = false }) {
           ) : (
             <ReactMarkdown
               components={{
-                code({ node, inline, className, children, ...props }) {
+                code({ node, className, children, ...props }) {
                   const match = /language-(\w+)/.exec(className || '')
-                  return !inline && match ? (
+                  const codeString = String(children).replace(/\n$/, '')
+                  
+                  // Check if this is a block code or inline code
+                  const isInline = !className
+                  
+                  return !isInline && match ? (
                     <div className="code-block">
                       <div className="code-header">
                         <span>{match[1]}</span>
-                        <button onClick={() => navigator.clipboard.writeText(String(children))}>
+                        <button onClick={() => navigator.clipboard.writeText(codeString)}>
                           Copy
                         </button>
                       </div>
                       <pre className={className} {...props}>
-                        <code>{children}</code>
+                        <code>{tokenizeCode(codeString, match[1])}</code>
                       </pre>
                     </div>
                   ) : (
@@ -75,9 +135,6 @@ function Message({ message, isStreaming = false }) {
               title="Copy to clipboard"
             >
               {copied ? '✓ Copied' : '⎘ Copy'}
-            </button>
-            <button className="action-btn" title="Regenerate response">
-              ↻ Regenerate
             </button>
           </div>
         )}

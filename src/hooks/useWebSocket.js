@@ -1,102 +1,111 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 
-const WS_URL = 'ws://localhost:8000/ws/chat'
+const BACKEND_URL = 'http://localhost:8000'
 
 export function useWebSocket(threadId) {
-  const [isConnected, setIsConnected] = useState(false)
+  const [isConnected, setIsConnected] = useState(true)
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
-  const wsRef = useRef(null)
-  const reconnectTimeoutRef = useRef(null)
+  const abortControllerRef = useRef(null)
 
-  const connect = useCallback(() => {
-    if (!threadId || wsRef.current?.readyState === WebSocket.OPEN) return
+  const sendMessage = useCallback(async (content, file = null) => {
+    if (!threadId) return false
+
+    const token = localStorage.getItem('orphic-token')
+    if (!token) {
+      console.error('No auth token found')
+      return false
+    }
+
+    setIsStreaming(true)
+    setStreamingContent('')
+
+    // Abort previous stream if any
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+
+    const formData = new FormData()
+    formData.append('session_id', threadId)
+    if (content) formData.append('message', content)
+    if (file) formData.append('file', file)
 
     try {
-      const ws = new WebSocket(`${WS_URL}/${threadId}`)
-      wsRef.current = ws
+      const response = await fetch(`${BACKEND_URL}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData,
+        signal: abortControllerRef.current.signal
+      })
 
-      ws.onopen = () => {
-        console.log('WebSocket connected')
-        setIsConnected(true)
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Unauthorized')
+        }
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
 
-        switch (data.type) {
-          case 'token':
-            setStreamingContent(prev => prev + data.content)
-            break
-          case 'start':
-            setIsStreaming(true)
-            setStreamingContent('')
-            break
-          case 'end':
-            setIsStreaming(false)
-            break
-          case 'error':
-            console.error('WebSocket error:', data.message)
-            setIsStreaming(false)
-            break
-          default:
-            break
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (trimmed.startsWith('data: ')) {
+            const data = trimmed.slice(6)
+            if (data.startsWith('[Error:')) {
+              console.error(data)
+              setStreamingContent(prev => prev + `\n${data}`)
+            } else {
+              setStreamingContent(prev => prev + data)
+            }
+          }
         }
       }
-
-      ws.onclose = () => {
-        console.log('WebSocket disconnected')
-        setIsConnected(false)
-        wsRef.current = null
-
-        // Auto-reconnect after 3 seconds
-        reconnectTimeoutRef.current = setTimeout(() => {
-          if (threadId) connect()
-        }, 3000)
-      }
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        setIsConnected(false)
-      }
     } catch (error) {
-      console.error('Failed to connect WebSocket:', error)
+      if (error.name !== 'AbortError') {
+        console.error('Streaming failed:', error)
+        if (error.message === 'Unauthorized') {
+          // Trigger token wipe
+          localStorage.removeItem('orphic-token')
+          window.location.reload()
+        }
+      }
+    } finally {
+      setIsStreaming(false)
     }
+
+    return true
   }, [threadId])
 
   const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current)
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
     }
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
-    }
+    setIsStreaming(false)
   }, [])
 
-  const sendMessage = useCallback((content) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'message',
-        content
-      }))
-      return true
-    }
-    return false
-  }, [])
-
-  // Connect when threadId changes
   useEffect(() => {
-    connect()
     return () => disconnect()
-  }, [connect, disconnect])
+  }, [disconnect])
 
   return {
     isConnected,
     isStreaming,
     streamingContent,
     sendMessage,
-    connect,
+    connect: () => {},
     disconnect
   }
 }

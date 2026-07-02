@@ -3,19 +3,51 @@ import Message from './Message'
 import ReasoningPanel from './ReasoningPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
 
+const BACKEND_URL = 'http://localhost:8000'
+
 function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
   const [inputValue, setInputValue] = useState('')
   const [showReasoning, setShowReasoning] = useState(false)
   const [localMessages, setLocalMessages] = useState([])
+  const [selectedFile, setSelectedFile] = useState(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
+  const fileInputRef = useRef(null)
 
-  // Use thread messages or local if no thread
   const messages = thread?.messages || localMessages
 
   const { isConnected, isStreaming, streamingContent, sendMessage } = useWebSocket(
     thread?.id
   )
+
+  // 1. Fetch conversation history from Neon DB / LangGraph checkpointer
+  useEffect(() => {
+    if (!thread?.id) return
+
+    const token = localStorage.getItem('orphic-token')
+    if (!token) return
+
+    fetch(`${BACKEND_URL}/api/v1/conversations/${thread.id}/messages`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => {
+        if (res.ok) return res.json()
+        throw new Error('Failed to load chat history')
+      })
+      .then(data => {
+        // Map backend history format to frontend message state
+        const mappedMessages = data.messages.map((m, index) => ({
+          id: `${thread.id}-${index}`,
+          role: m.role,
+          content: m.content,
+          timestamp: Date.now()
+        }))
+        onUpdateMessages(thread.id, mappedMessages)
+      })
+      .catch(err => {
+        console.error('Failed to load message history:', err)
+      })
+  }, [thread?.id, onUpdateMessages])
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -29,59 +61,56 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
   // Focus input when thread changes
   useEffect(() => {
     inputRef.current?.focus()
+    setSelectedFile(null) // clear file on chat switch
   }, [thread?.id])
 
-  // Update title based on first user message
+  // Update thread title based on the first user message
   useEffect(() => {
     if (thread && messages.length > 0 && thread.title === 'New Chat') {
-      const firstUserMessage = messages.find(m => m.role === 'user')
-      if (firstUserMessage) {
-        const title = firstUserMessage.content.slice(0, 30) + '...'
+      const firstUserMsg = messages.find(m => m.role === 'user')
+      if (firstUserMsg) {
+        const title = firstUserMsg.content.slice(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '')
         onUpdateTitle(thread.id, title)
       }
     }
   }, [thread, messages, onUpdateTitle])
 
   const handleSend = useCallback(async () => {
-    if (!inputValue.trim() || !thread) return
+    if ((!inputValue.trim() && !selectedFile) || !thread) return
+
+    let userMessageContent = inputValue.trim()
+    if (selectedFile && !userMessageContent) {
+      userMessageContent = `Uploaded file: ${selectedFile.name}`
+    }
 
     const userMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: inputValue.trim(),
+      content: userMessageContent,
       timestamp: Date.now()
     }
 
-    // Add user message
     const newMessages = [...messages, userMessage]
-    if (thread) {
-      onUpdateMessages(thread.id, newMessages)
-    } else {
-      setLocalMessages(newMessages)
-    }
+    onUpdateMessages(thread.id, newMessages)
 
-    // Clear input
     setInputValue('')
+    const fileToSend = selectedFile
+    setSelectedFile(null)
 
-    // Send via WebSocket
-    sendMessage(userMessage.content)
-  }, [inputValue, thread, messages, onUpdateMessages, sendMessage])
+    // Stream the message + file attachment via fetch SSE
+    await sendMessage(inputValue.trim(), fileToSend)
+  }, [inputValue, thread, messages, onUpdateMessages, selectedFile, sendMessage])
 
-  // Handle streaming completion
+  // Handle streaming response updates
   useEffect(() => {
     if (!isStreaming && streamingContent && thread) {
-      // Streaming finished, save the complete message
       const lastMessage = messages[messages.length - 1]
       if (lastMessage?.role === 'assistant') {
-        // Update existing assistant message
         const updatedMessages = messages.map((m, idx) =>
-          idx === messages.length - 1
-            ? { ...m, content: streamingContent }
-            : m
+          idx === messages.length - 1 ? { ...m, content: streamingContent } : m
         )
         onUpdateMessages(thread.id, updatedMessages)
       } else {
-        // Add new assistant message
         const assistantMessage = {
           id: crypto.randomUUID(),
           role: 'assistant',
@@ -93,10 +122,8 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
     }
   }, [isStreaming, streamingContent, thread, messages, onUpdateMessages])
 
-  // Add streaming message to display
   const displayMessages = [...messages]
   if (isStreaming && streamingContent) {
-    // Check if last message is already an assistant message being updated
     const lastMessage = displayMessages[displayMessages.length - 1]
     if (lastMessage?.role === 'assistant') {
       lastMessage.content = streamingContent
@@ -115,6 +142,16 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
       e.preventDefault()
       handleSend()
     }
+  }
+
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0])
+    }
+  }
+
+  const handleAttachmentClick = () => {
+    fileInputRef.current?.click()
   }
 
   const hasMessages = displayMessages.length > 0
@@ -139,9 +176,6 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
             title="Toggle reasoning panel"
           >
             🧠 Reasoning
-          </button>
-          <button className="settings-btn" title="Settings">
-            ⚙
           </button>
         </div>
       </div>
@@ -178,7 +212,7 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
             </div>
           ) : !hasMessages ? (
             <div className="empty-chat">
-              <p>Send a message to start the conversation...</p>
+              <p>Send a message or upload a document/image to start the conversation...</p>
             </div>
           ) : (
             <div className="messages-list">
@@ -204,19 +238,48 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
 
       <div className="input-container">
         <div className="input-wrapper">
-          <textarea
-            ref={inputRef}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={thread ? "Message Orphic..." : "Start a new chat to begin..."}
-            disabled={!thread || isStreaming}
-            rows={1}
-            style={{
-              minHeight: '24px',
-              maxHeight: '200px'
-            }}
-          />
+          {selectedFile && (
+            <div className="file-preview-pill">
+              <span className="file-icon">
+                {selectedFile.type.startsWith('image/') ? '🖼️' : '📄'}
+              </span>
+              <span className="file-name">{selectedFile.name}</span>
+              <button className="remove-file-btn" onClick={() => setSelectedFile(null)}>✕</button>
+            </div>
+          )}
+          
+          <div className="input-row">
+            <button 
+              className="attach-btn" 
+              onClick={handleAttachmentClick}
+              title="Attach document (PDF/CSV/Excel/Text) or Image"
+              disabled={!thread || isStreaming}
+            >
+              📎
+            </button>
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileChange} 
+              style={{ display: 'none' }}
+              accept=".pdf,.csv,.xlsx,.xls,.txt,.md,.jpg,.jpeg,.png,.webp"
+            />
+            
+            <textarea
+              ref={inputRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={thread ? "Message Orphic or ask about a file..." : "Start a new chat to begin..."}
+              disabled={!thread || isStreaming}
+              rows={1}
+              style={{
+                minHeight: '24px',
+                maxHeight: '200px'
+              }}
+            />
+          </div>
+          
           <div className="input-actions">
             <span className="input-hint">
               {isStreaming ? 'Generating...' : 'Press Enter to send'}
@@ -224,7 +287,7 @@ function Chat({ thread, onUpdateTitle, onUpdateMessages, onNewThread }) {
             <button
               className="send-btn"
               onClick={handleSend}
-              disabled={!inputValue.trim() || !thread || isStreaming}
+              disabled={(!inputValue.trim() && !selectedFile) || !thread || isStreaming}
             >
               {isStreaming ? (
                 <span className="spinner">◌</span>
